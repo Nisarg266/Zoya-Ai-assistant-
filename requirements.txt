@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# Zoya — runtime dependencies for the Desktop Automation module
+# Install with:  pip install -r requirements.txt
+# (Windows-only packages are pinned to Windows via PEP 508 markers so the file
+#  stays importable on other platforms for unit testing.)
+# ---------------------------------------------------------------------------
+
+# --- Input simulation ------------------------------------------------------
+pynput>=1.7.6                # keyboard + mouse simulation (cross-platform)
+
+# --- Windows-only system access --------------------------------------------
+pywin32>=306 ; platform_system == "Windows"        # Win32 API (windows, clipboard)
+psutil>=5.9                                        # process management
+pycaw>=20230407 ; platform_system == "Windows"     # Core Audio volume control
+comtypes>=1.2 ; platform_system == "Windows"        # COM bridge used by pycaw
+screen-brightness-control>=0.23                     # monitor brightness
+
+# --- Optional but recommended (recycle-bin safe delete) --------------------
+send2trash>=1.8
+
+# --- Configuration & validation -------------------------------------------
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+PyYAML>=6.0
+
+# --- Testing ---------------------------------------------------------------
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# --- LLM Integration -------------------------------------------------------
+google-genai>=0.3.0                          # New Gemini API SDK

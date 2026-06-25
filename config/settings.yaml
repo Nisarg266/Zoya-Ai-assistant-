@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Zoya — runtime settings (YAML).
+# These are merged on top of the .env values loaded by pydantic-settings.
+# Edit freely; missing keys fall back to model defaults.
+# ---------------------------------------------------------------------------
+
+automation:
+  default_type_interval: 0.0      # seconds between characters when typing text
+  key_press_interval: 0.1         # seconds between repeated key taps
+  mouse_move_duration: 0.3        # seconds for a smooth cursor move
+  mouse_move_steps: 50            # interpolation steps per smooth move
+  click_interval: 0.1             # seconds between successive clicks
+  scroll_amount: 3                # default scroll magnitude (reserved)
+  launch_timeout: 10.0            # seconds to wait when launching an app
+  screenshot_dir: screenshots     # where future vision module writes images
+  safe_delete: true               # prefer recycle bin over permanent deletion
+
+paths:
+  notes_dir: data/notes           # default location for user notes/memory files

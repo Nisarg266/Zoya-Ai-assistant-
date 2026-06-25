@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Zoya packaging + tool configuration (PEP 621)
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zoya-ai-assistant"
+version = "0.1.0"
+description = "Zoya — a production-grade desktop AI assistant for Windows."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Zoya Project" }]
+
+# Runtime dependencies mirror requirements.txt; pinned here so an editable
+# install (`pip install -e .`) pulls everything automatically.
+dependencies = [
+    "pynput>=1.7.6",
+    "pywin32>=306 ; platform_system == 'Windows'",
+    "psutil>=5.9",
+    "pycaw>=20230407 ; platform_system == 'Windows'",
+    "comtypes>=1.2 ; platform_system == 'Windows'",
+    "screen-brightness-control>=0.23",
+    "send2trash>=1.8",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# pythonpath=["src"] makes `import zoya` work without an editable install.
+# asyncio_mode=auto lets us write `async def test_*` without decorators.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+markers = [
+    "integration: tests that drive the real Windows desktop (deselect with -m 'not integration')",
+]
