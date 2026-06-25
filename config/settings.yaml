@@ -17,3 +17,13 @@ automation:
 
 paths:
   notes_dir: data/notes           # default location for user notes/memory files
+
+llm:
+  temperature: 0.7                 # 0 = deterministic, 2 = max creativity
+  top_p: 1.0                       # nucleus sampling probability mass
+  top_k: 0                         # 0 = provider default
+  max_output_tokens: 8192          # hard cap on tokens per model response
+  thinking_budget: -1              # -1 = dynamic (model-decided), 0 = disable
+  max_react_iterations: 8          # cap on prompt -> tool -> answer loops
+  max_history_turns: 20            # keep at most this many user/model turn-pairs
+  max_history_tokens: 50000        # trim oldest turns once history exceeds this

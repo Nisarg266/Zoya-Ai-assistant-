@@ -219,6 +219,33 @@ class TerminateProcessParams(ToolParams):
 
 
 # ===========================================================================
+# Application registry parameters
+# ===========================================================================
+class OpenAppParams(ToolParams):
+    """Parameters for the ``open_app`` tool (registry-driven app launching).
+
+    ``name`` is resolved through ``config/applications.yaml`` (canonical name or
+    alias) and falls back to the system PATH, so a bare exe name still works.
+    """
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Friendly application name as registered in config/applications.yaml "
+            "(e.g. 'notepad', 'calculator', 'vscode'). Unknown names are "
+            "attempted via the system PATH."
+        ),
+    )
+    args: Optional[str] = Field(
+        None, description="Extra command-line arguments appended to the app's defaults."
+    )
+    working_dir: Optional[str] = Field(
+        None, description="Override working directory for the new process."
+    )
+
+
+# ===========================================================================
 # System parameters
 # ===========================================================================
 class GetVolumeParams(ToolParams):
@@ -284,6 +311,8 @@ __all__ = [
     "LaunchAppParams",
     "ListProcessesParams",
     "TerminateProcessParams",
+    # application registry
+    "OpenAppParams",
     # system
     "GetVolumeParams",
     "SetVolumeParams",

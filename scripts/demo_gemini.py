@@ -9,6 +9,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any
+from pydantic import BaseModel, Field
 
 # Add the 'src' directory to Python's path so it can find 'zoya'
 project_root = Path(__file__).resolve().parent.parent
@@ -27,7 +28,6 @@ class GetWeatherTool(BaseTool):
     description = "Get the current weather for a specific location."
     readonly = True
     
-    from pydantic import BaseModel, Field
     class ParamsModel(BaseModel):
         location: str = Field(..., description="The city name to get the weather for.")
         

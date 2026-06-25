@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# Zoya — Application registry for the AppController / OpenAppTool.
+#
+# Map a *friendly name* (what the user / LLM asks for) to the executable and
+# optional launch options. Editing this file is the ONLY step needed to teach
+# Zoya how to open a new application — no code changes required.
+#
+# Top-level key MUST be `applications`. Each child key is a canonical friendly
+# name (case-insensitive lookups) with these fields:
+#
+#   executable  : (required) bare exe name resolved via PATH, or an absolute path.
+#   aliases     : (optional) list of extra names that resolve to this app.
+#   args        : (optional) default command-line arguments.
+#   working_dir : (optional) working directory for the new process.
+#   elevated    : (optional, default false) run as administrator (triggers UAC).
+#
+# Tip: run `AppController.verify()` (or enable `verify_on_load`) to log any
+# registered executables that cannot be found on this machine.
+#
+# To add a new application:
+#   1. Find its executable name (e.g. open the app's shortcut properties).
+#   2. Add a block below with a friendly name and the `executable`.
+#   3. Add any handy `aliases` users are likely to say.
+#   4. Reload (AppController.reload()) or restart Zoya.
+# ---------------------------------------------------------------------------
+applications:
+
+  notepad:
+    executable: notepad.exe
+    aliases: [text editor]
+
+  calculator:
+    executable: calc.exe
+    aliases: [calc]
+
+  explorer:
+    executable: explorer.exe
+    aliases: [files, file explorer]
+
+  paint:
+    executable: mspaint.exe
+    aliases: [mspaint]
+
+  cmd:
+    executable: cmd.exe
+    aliases: [command prompt, terminal]
+
+  powershell:
+    executable: powershell.exe
+
+  taskmgr:
+    executable: taskmgr.exe
+    aliases: [task manager]
+
+  vscode:
+    executable: code.exe
+    aliases: [code, visual studio code]
+
+  word:
+    executable: winword.exe
+    aliases: [msword]
+
+  excel:
+    executable: excel.exe
+
+  chrome:
+    executable: chrome.exe
+    aliases: [google chrome, browser]
+
+  spotify:
+    executable: Spotify.exe

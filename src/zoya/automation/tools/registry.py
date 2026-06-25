@@ -35,10 +35,28 @@ class ToolRegistry:
 
 def create_default_registry() -> ToolRegistry:
     """Factory to create a ToolRegistry pre-populated with all standard tools.
-    
-    (Note: Full automation tools will be populated here when built).
+
+    This is the application's single **composition root**: the only place
+    controllers are instantiated and injected into tools. Adding a capability is
+    therefore a one-line change here (Open/Closed Principle) — nothing else in
+    the codebase needs to change.
+
+    Note
+    ----
+    Controller/tool imports are local so that ``import zoya.automation.tools``
+    stays lightweight and cycle-free; the concrete tools are only needed when a
+    registry is actually built.
     """
     registry = ToolRegistry()
-    # In a full implementation, we would instantiate controllers and tools here
-    # e.g., registry.register(TypeTextTool(keyboard_controller))
+
+    # --- Application launcher -------------------------------------------
+    from zoya.automation.controllers.app_controller import AppController
+    from zoya.automation.tools.app import OpenAppTool
+
+    app_controller = AppController()
+    registry.register(OpenAppTool(app_controller))
+
+    # Future tools (keyboard, mouse, window, filesystem, process, system)
+    # plug in here, each as: registry.register(XxxTool(controller)).
+
     return registry
