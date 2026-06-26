@@ -1,7 +1,8 @@
 """Keyboard input simulation built on :mod:`pynput`.
 
-Responsibility (SRP): *keyboard only* — type text, tap keys, emit hotkeys.
-No mouse, no windows, no business logic. Higher layers (tools) orchestrate.
+Responsibility (SRP): *keyboard only* — type text, press keys, emit hotkeys,
+and hold/release keys. No mouse, no windows, no business logic. Higher layers
+(tools) orchestrate.
 
 A key design choice is the **alias table** below: callers (the LLM included)
 describe keys with friendly strings like ``"ctrl"``, ``"win"`` or ``"f5"``.
@@ -103,8 +104,12 @@ class KeyboardController:
             self._kb.type(ch)
             time.sleep(delay)
 
-    def tap(self, key: str, presses: int = 1, interval: float | None = None) -> None:
-        """Press and release a single key one or more times."""
+    def press_key(self, key: str, presses: int = 1, interval: float | None = None) -> None:
+        """Press and release a single key one or more times (a "tap").
+
+        ``presses`` repeats the whole press/release cycle; ``interval`` is the
+        delay between successive presses.
+        """
         resolved = self._resolve_key(key)
         delay = self._key_interval if interval is None else max(0.0, interval)
         for _ in range(max(1, presses)):
@@ -112,7 +117,11 @@ class KeyboardController:
             self._kb.release(resolved)
             if delay:
                 time.sleep(delay)
-        logger.debug("Tapped %s x%d", key, presses)
+        logger.debug("Pressed key %s x%d", key, presses)
+
+    def tap(self, key: str, presses: int = 1, interval: float | None = None) -> None:
+        """Deprecated alias for :meth:`press_key`."""
+        self.press_key(key, presses=presses, interval=interval)
 
     def press_hotkey(self, combo: str, repeats: int = 1) -> None:
         """Emit a key combination such as ``"ctrl+shift+s"``.
@@ -132,13 +141,24 @@ class KeyboardController:
                 self._kb.release(k)
         logger.debug("Hotkey %s x%d", combo, repeats)
 
-    def press(self, key: str) -> None:
-        """Hold a key down (pair with :meth:`release`)."""
+    def hold_key(self, key: str) -> None:
+        """Press and hold a key down (pair with :meth:`release_key`)."""
         self._kb.press(self._resolve_key(key))
+        logger.debug("Holding key %s", key)
+
+    def release_key(self, key: str) -> None:
+        """Release a previously held key (pair with :meth:`hold_key`)."""
+        self._kb.release(self._resolve_key(key))
+        logger.debug("Released key %s", key)
+
+    # Backward-compatible aliases for the pynput-idiomatic press/release pair.
+    def press(self, key: str) -> None:
+        """Deprecated alias for :meth:`hold_key`."""
+        self.hold_key(key)
 
     def release(self, key: str) -> None:
-        """Release a previously held key."""
-        self._kb.release(self._resolve_key(key))
+        """Deprecated alias for :meth:`release_key`."""
+        self.release_key(key)
 
 
 __all__ = ["KeyboardController"]

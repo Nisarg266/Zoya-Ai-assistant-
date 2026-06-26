@@ -66,6 +66,4 @@ applications:
   chrome:
     executable: chrome.exe
     aliases: [google chrome, browser]
-
-  spotify:
-    executable: Spotify.exe
+    args: ["--new-window"]      # default argv[1:] — one token per element

@@ -56,6 +56,27 @@ def create_default_registry() -> ToolRegistry:
     app_controller = AppController()
     registry.register(OpenAppTool(app_controller))
 
+    # --- Keyboard -------------------------------------------------------
+    from zoya.automation.controllers.keyboard import KeyboardController
+    from zoya.automation.tools.keyboard import KeyboardTool
+
+    keyboard_controller = KeyboardController()
+    registry.register(KeyboardTool(keyboard_controller))
+
+    # --- Mouse ----------------------------------------------------------
+    from zoya.automation.controllers.mouse import MouseController
+    from zoya.automation.tools.mouse import MouseTool
+
+    mouse_controller = MouseController()
+    registry.register(MouseTool(mouse_controller))
+
+    # --- Power (system state) ------------------------------------------
+    from zoya.automation.controllers.system import SystemController
+    from zoya.automation.tools.power import PowerTool
+
+    system_controller = SystemController()
+    registry.register(PowerTool(system_controller))
+
     # Future tools (keyboard, mouse, window, filesystem, process, system)
     # plug in here, each as: registry.register(XxxTool(controller)).
 

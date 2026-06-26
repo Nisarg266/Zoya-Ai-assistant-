@@ -10,11 +10,21 @@ Resolution order
    ``aliases`` (case-insensitive).
 2. **System PATH** fallback: if the name isn't registered, it is treated as a
    bare executable name and resolved with :func:`shutil.which`. This keeps the
-   tool useful even before the registry is populated.
+   tool useful even before the registry is populated. Each fallback launch is
+   logged at WARNING so it is auditable.
+
+Thread safety
+-------------
+A single ``AppController`` is shared by every ``open_app`` call, and the tool
+layer runs each ``_run`` in a worker thread (``asyncio.to_thread``). All access
+to the registry dicts is therefore guarded by an :class:`~threading.RLock`.
+File parsing happens *outside* the lock (slow I/O); only the final swap of the
+resolved dicts is performed under it, and process spawning happens *outside* the
+lock so concurrent launches never block each other.
 
 Errors
 ------
-This module defines two **custom exceptions**, both subclasses of the existing
+Two **custom exceptions** are defined here, both subclasses of the central
 :class:`~zoya.core.exceptions.ProcessError` (and therefore of
 :class:`~zoya.core.exceptions.ZoyaError`) so they integrate with the tool
 layer's uniform ``except ZoyaError`` handling:
@@ -22,20 +32,22 @@ layer's uniform ``except ZoyaError`` handling:
 * :class:`ApplicationNotFoundError` — the name is neither registered nor on PATH.
 * :class:`AppLaunchError`           — found, but spawning/elevating failed.
 
-A malformed registry still raises :class:`~zoya.core.exceptions.ConfigurationError`.
+A malformed registry raises :class:`~zoya.core.exceptions.ConfigurationError`.
 
-This controller is intentionally Windows-aware but import-safe everywhere:
-Windows-only behaviour (UAC elevation) is guarded by platform checks.
+The controller is Windows-aware but import-safe everywhere: Windows-only
+behaviour (UAC elevation) is guarded by platform checks.
 """
 
 from __future__ import annotations
 
+import ctypes
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -48,6 +60,26 @@ logger = get_logger("automation.app")
 
 #: Default location of the application registry, anchored at the project root.
 DEFAULT_REGISTRY_PATH: Path = PATHS.base / "config" / "applications.yaml"
+
+#: ShellExecuteW success threshold — a return value strictly greater than this
+#: means success; any value <= 32 is an error code (see :data:`_SE_ERRORS`).
+_SE_SUCCESS_THRESHOLD = 32
+
+#: Human-readable mapping of ShellExecuteW error codes (subset).
+_SE_ERRORS = {
+    0: "out of memory",
+    2: "file not found",
+    3: "path not found",
+    5: "access denied",
+    8: "not enough memory",
+    26: "sharing violation",
+    27: "association incomplete",
+    28: "DDE timeout",
+    29: "DDE failed",
+    30: "DDE busy",
+    31: "no association",
+    32: "DLL not found",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +114,10 @@ class ApplicationEntry(BaseModel):
     ``extra="forbid"`` so a typo in a field name (e.g. ``executabel:``) surfaces
     as a precise :class:`~zoya.core.exceptions.ConfigurationError` at load time
     instead of silently being ignored.
+
+    Arguments are a ``list[str]`` (never a space-joined string) so each token is
+    passed to the child verbatim — paths and arguments containing spaces survive
+    intact (no ``str.split`` round-trip).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -89,10 +125,13 @@ class ApplicationEntry(BaseModel):
     executable: str = Field(
         ..., min_length=1, description="Bare exe name (resolved via PATH) or absolute path."
     )
-    aliases: List[str] = Field(
+    aliases: list[str] = Field(
         default_factory=list, description="Extra friendly names resolving to this app."
     )
-    args: Optional[str] = Field(None, description="Default command-line arguments.")
+    args: list[str] = Field(
+        default_factory=list,
+        description="Default argv[1:] tokens passed to the executable.",
+    )
     working_dir: Optional[str] = Field(None, description="Working directory for the new process.")
     elevated: bool = Field(False, description="If True, request elevation (UAC) on Windows.")
 
@@ -102,12 +141,17 @@ class ApplicationEntry(BaseModel):
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ProcessLaunchResult:
-    """Structured outcome of a successful :meth:`AppController.open_app` call."""
+    """Structured outcome of a successful :meth:`AppController.open_app` call.
 
-    name: str
+    ``args`` is the *effective* ``argv[1:]`` actually passed to the child (the
+    registry defaults plus any caller-supplied extras), not a re-joined string.
+    """
+
+    requested: str
+    canonical: Optional[str]
     executable: str
     pid: Optional[int]
-    args: str
+    args: list[str]
     elevated: bool
     via_registry: bool
 
@@ -123,11 +167,6 @@ class AppController:
     registry_path:
         Override for the registry file. Defaults to
         :data:`DEFAULT_REGISTRY_PATH` (``config/applications.yaml``).
-    launch_timeout:
-        Reserved upper bound (seconds) for future wait-on-launch behaviour.
-        Kept for parity with
-        :class:`~zoya.automation.controllers.process_manager.ProcessManager` and
-        driven from ``automation.launch_timeout`` in ``settings.yaml``.
     verify_on_load:
         When ``True``, log a warning for every registered executable that cannot
         be found on this machine. Never raises — purely diagnostic.
@@ -136,14 +175,14 @@ class AppController:
     def __init__(
         self,
         registry_path: Optional[str | Path] = None,
-        launch_timeout: float = 10.0,
         verify_on_load: bool = False,
     ) -> None:
         self._registry_path: Path = (
             Path(registry_path).resolve() if registry_path else DEFAULT_REGISTRY_PATH
         )
-        self._launch_timeout: float = max(0.0, launch_timeout)
         self._verify_on_load: bool = verify_on_load
+        # Guard all access to the two dicts below — see "Thread safety" above.
+        self._lock: threading.RLock = threading.RLock()
         self._entries: dict[str, ApplicationEntry] = {}
         self._aliases: dict[str, str] = {}  # alias(lower) -> canonical(lower)
         self.reload()
@@ -158,25 +197,45 @@ class AppController:
         """(Re)read the registry from disk and rebuild the alias index.
 
         Raises :class:`~zoya.core.exceptions.ConfigurationError` on a malformed
-        file or an invalid entry; otherwise idempotent and safe to call anytime
-        (e.g. after the user edits the YAML while Zoya is running).
+        file or an invalid entry. Parsing happens outside the lock; only the
+        final swap of the resolved dicts is performed under it, so concurrent
+        readers are never blocked by file I/O and always observe a consistent
+        ``(entries, aliases)`` pair.
+        """
+        entries, aliases = self._parse_registry()
+        with self._lock:
+            self._entries, self._aliases = entries, aliases
+        logger.info(
+            "Application registry loaded",
+            extra={"count": len(entries), "registry": str(self._registry_path)},
+        )
+        if self._verify_on_load:
+            missing = self.verify()
+            if missing:
+                logger.warning(
+                    "Registered executables not found on this machine",
+                    extra={"missing": sorted(missing)},
+                )
+
+    def _parse_registry(self) -> tuple[dict[str, ApplicationEntry], dict[str, str]]:
+        """Read & validate the YAML, returning fresh ``(entries, aliases)`` dicts.
+
+        Never mutates instance state, so it is safe to run outside the lock.
         """
         path = self._registry_path
         if not path.exists():
             logger.warning(
-                "Application registry not found at %s; starting empty "
-                "(PATH fallback still available).",
-                path,
+                "Application registry not found; starting empty (PATH fallback still available)",
+                extra={"registry": str(path)},
             )
-            self._entries, self._aliases = {}, {}
-            return
+            return {}, {}
 
         try:
             with path.open("r", encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh)
         except yaml.YAMLError as exc:
             raise ConfigurationError(
-                f"Failed to parse application registry at {path}",
+                "Failed to parse application registry",
                 code="CFG_APP_REGISTRY_PARSE",
                 context={"path": str(path)},
                 cause=exc,
@@ -184,11 +243,10 @@ class AppController:
 
         if not isinstance(raw, dict) or not isinstance(raw.get("applications"), dict):
             logger.warning(
-                "Registry %s is missing a top-level 'applications:' mapping; ignoring.",
-                path,
+                "Registry is missing a top-level 'applications:' mapping; ignoring",
+                extra={"registry": str(path)},
             )
-            self._entries, self._aliases = {}, {}
-            return
+            return {}, {}
 
         entries: dict[str, ApplicationEntry] = {}
         aliases: dict[str, str] = {}
@@ -197,7 +255,7 @@ class AppController:
                 entry = ApplicationEntry(**(body or {}))
             except ValidationError as exc:
                 raise ConfigurationError(
-                    f"Invalid entry for application {canonical!r} in {path}",
+                    f"Invalid entry for application {canonical!r}",
                     code="CFG_APP_REGISTRY_INVALID",
                     context={"app": canonical, "path": str(path)},
                     cause=exc,
@@ -212,61 +270,50 @@ class AppController:
                     continue
                 if a in aliases and aliases[a] != key:
                     logger.warning(
-                        "Alias %r for %r clashes with %r; keeping the first mapping.",
-                        a,
-                        key,
-                        aliases[a],
+                        "Alias clash ignored; keeping first mapping",
+                        extra={"alias": a, "requested": key, "kept": aliases[a]},
                     )
                     continue
                 aliases.setdefault(a, key)
 
-        self._entries, self._aliases = entries, aliases
-        logger.info("Loaded %d application(s) from registry (%s).", len(entries), path)
-        if self._verify_on_load:
-            missing = self.verify()
-            if missing:
-                logger.warning(
-                    "Registered executables not found on this machine: %s",
-                    ", ".join(sorted(missing)),
-                )
+        return entries, aliases
 
     # ------------------------------------------------------------------ query
-    def list_applications(self) -> List[str]:
+    def list_applications(self) -> list[str]:
         """Canonical friendly names known to the registry (sorted)."""
-        return sorted(self._entries.keys())
+        with self._lock:
+            return sorted(self._entries.keys())
 
     def resolve(self, name: str) -> Optional[tuple[str, ApplicationEntry]]:
         """Resolve ``name`` to its ``(canonical, entry)`` if registered, else ``None``.
 
-        Lookup is case-insensitive and matches canonical names and any declared
-        alias.
+        Case-insensitive; matches canonical names and any declared alias.
         """
         key = name.strip().lower()
-        canonical = self._aliases.get(key)
-        if canonical is None:
-            return None
-        return canonical, self._entries[canonical]
+        with self._lock:
+            canonical = self._aliases.get(key)
+            if canonical is None:
+                return None
+            return canonical, self._entries[canonical]
 
-    def verify(self) -> List[str]:
+    def verify(self) -> list[str]:
         """Return canonical names whose executable cannot be located on this machine."""
-        missing: List[str] = []
-        for canonical, entry in self._entries.items():
-            if not self._locate(entry.executable):
-                missing.append(canonical)
-        return missing
+        with self._lock:
+            items = list(self._entries.items())
+        return [canonical for canonical, entry in items if not self._locate(entry.executable)]
 
     # ------------------------------------------------------------------ launch
     def open_app(
         self,
         name: str,
-        args: Optional[str] = None,
+        args: Optional[list[str]] = None,
         working_dir: Optional[str] = None,
     ) -> ProcessLaunchResult:
         """Open an application by friendly name.
 
         Resolution: registry first (canonical name or alias), then a PATH
-        fallback so bare exe names still work. For a registry hit, ``args`` is
-        *appended* to the entry's default arguments and ``working_dir`` overrides
+        fallback. For a registry hit, ``args`` is *appended* to the entry's
+        default arguments (both are ``list[str]``) and ``working_dir`` overrides
         the entry's default.
 
         Raises
@@ -277,22 +324,26 @@ class AppController:
             The app was found but could not be spawned (permissions, format,
             or a declined UAC prompt).
         """
-        resolved = self.resolve(name)
-        if resolved is not None:
-            canonical, entry = resolved
-            executable = entry.executable
-            merged_args = " ".join(s for s in (entry.args, args) if s)
-            final_cwd = working_dir or entry.working_dir
-            elevated = entry.elevated
-            via_registry = True
-            display_name = canonical
-        else:
-            executable = name
-            merged_args = args or ""
-            final_cwd = working_dir
-            elevated = False
-            via_registry = False
-            display_name = name
+        extra_args = list(args or [])
+
+        # Resolve under the lock, then copy out the scalars we need so the slow
+        # spawn happens *outside* the lock (concurrent launches don't block).
+        with self._lock:
+            resolved = self.resolve(name)
+            if resolved is not None:
+                canonical, entry = resolved
+                executable = entry.executable
+                merged_args = list(entry.args) + extra_args
+                final_cwd = working_dir or entry.working_dir
+                elevated = entry.elevated
+                via_registry = True
+            else:
+                canonical = None
+                executable = name
+                merged_args = extra_args
+                final_cwd = working_dir
+                elevated = False
+                via_registry = False
 
         resolved_exe = self._locate(executable)
         if resolved_exe is None:
@@ -302,29 +353,39 @@ class AppController:
                 context={"requested": name, "executable": executable},
             )
 
-        arg_list = merged_args.split() if merged_args else []
+        if not via_registry:
+            logger.warning(
+                "Application resolved via PATH fallback (not in registry)",
+                extra={"requested": name, "executable": resolved_exe},
+            )
 
         if elevated:
-            pid = self._launch_elevated(resolved_exe, arg_list, final_cwd, display_name)
+            pid = self._launch_elevated(resolved_exe, merged_args, final_cwd, name)
         else:
-            pid = self._launch_subprocess(resolved_exe, arg_list, final_cwd, display_name, name)
+            pid = self._launch_subprocess(resolved_exe, merged_args, final_cwd, name)
 
-        logger.info(
-            "Opened %r -> %s (pid=%s, elevated=%s, via_registry=%s).",
-            display_name,
-            resolved_exe,
-            pid if pid is not None else "n/a",
-            elevated,
-            via_registry,
-        )
-        return ProcessLaunchResult(
-            name=display_name,
+        result = ProcessLaunchResult(
+            requested=name,
+            canonical=canonical,
             executable=resolved_exe,
             pid=pid,
             args=merged_args,
             elevated=elevated,
             via_registry=via_registry,
         )
+        logger.info(
+            "Opened application",
+            extra={
+                "requested": result.requested,
+                "canonical": result.canonical,
+                "executable": result.executable,
+                "pid": result.pid,
+                "elevated": result.elevated,
+                "via_registry": result.via_registry,
+                "args": result.args,
+            },
+        )
+        return result
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -340,23 +401,23 @@ class AppController:
     def _launch_subprocess(
         self,
         executable: str,
-        arg_list: List[str],
+        arg_list: list[str],
         working_dir: Optional[str],
-        display_name: str,
-        original_name: str,
+        requested: str,
     ) -> int:
         """Launch via :class:`subprocess.Popen` and return the new PID.
 
         Raises :class:`AppLaunchError` on any spawning failure.
         """
         cmd = [executable, *arg_list]
-        # Detach the child into its own process group on Windows so it survives
-        # Zoya. The attribute is only accessed on win32 (short-circuited away
-        # elsewhere), so this stays import-safe on POSIX.
+        # CREATE_NEW_PROCESS_GROUP isolates the child from Zoya's Ctrl+C / break
+        # signals. It does NOT, by itself, detach the child's lifetime. The
+        # attribute is only accessed on win32 (short-circuited away elsewhere),
+        # so this stays import-safe on POSIX.
         creationflags = (
             subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         )
-        logger.info("Launching: %s", " ".join(cmd))
+        logger.info("Launching process", extra={"cmd": cmd})
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -367,17 +428,21 @@ class AppController:
             )
         except OSError as exc:  # FileNotFoundError / PermissionError / etc.
             raise AppLaunchError(
-                f"Failed to launch {original_name!r} ({executable!r}): {exc}",
-                context={"executable": executable, "errno": getattr(exc, "winerror", None)},
+                f"Failed to launch {requested!r} ({executable!r}): {exc}",
+                context={
+                    "executable": executable,
+                    "errno": exc.errno,
+                    "winerror": getattr(exc, "winerror", None),
+                },
             ) from exc
         return proc.pid
 
     def _launch_elevated(
         self,
         executable: str,
-        arg_list: List[str],
+        arg_list: list[str],
         working_dir: Optional[str],
-        display_name: str,
+        requested: str,
     ) -> Optional[int]:
         """Launch with UAC elevation (Windows only) via ``ShellExecuteW``.
 
@@ -388,30 +453,45 @@ class AppController:
         """
         if sys.platform != "win32":
             raise AppLaunchError(
-                f"Elevation is only supported on Windows (requested for {display_name!r}).",
+                f"Elevation is only supported on Windows (requested for {requested!r}).",
                 context={"executable": executable, "platform": sys.platform},
             )
 
-        import ctypes
+        # Declare proper signatures: without them ctypes defaults restype to a
+        # 32-bit c_int, which TRUNCATES the pointer-sized HINSTANCE on 64-bit
+        # Windows and makes the success/failure check unreliable.
+        from ctypes import wintypes
 
+        shell_execute = ctypes.windll.shell32.ShellExecuteW
+        shell_execute.argtypes = [
+            wintypes.HWND,    # hwnd
+            wintypes.LPCWSTR, # lpVerb
+            wintypes.LPCWSTR, # lpFile
+            wintypes.LPCWSTR, # lpParameters
+            wintypes.LPCWSTR, # lpDirectory
+            wintypes.UINT,    # nShowCmd
+        ]
+        shell_execute.restype = wintypes.HINSTANCE
+
+        # ShellExecuteW takes lpParameters as ONE string; join argv with proper
+        # Windows quoting so paths/args containing spaces survive.
+        params = subprocess.list2cmdline(arg_list) if arg_list else None
         SW_SHOWNORMAL = 1
-        params = " ".join(arg_list) if arg_list else None
-        # ShellExecuteW(hwnd, verb, file, params, directory, showCmd) -> int > 32 on success.
-        rc: Any = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", executable, params, working_dir, SW_SHOWNORMAL
+
+        rc = int(
+            shell_execute(None, "runas", executable, params, working_dir, SW_SHOWNORMAL)
         )
-        rc = int(rc)
-        if rc <= 32:
-            # 2 = FILE_NOT_FOUND, 5 = ACCESS_DENIED, 1223 = user cancelled UAC.
+        if rc <= _SE_SUCCESS_THRESHOLD:
+            reason = _SE_ERRORS.get(rc, "unknown error")
             raise AppLaunchError(
-                f"Elevated launch failed for {display_name!r} "
+                f"Elevated launch failed for {requested!r}: {reason} "
                 f"(ShellExecute code={rc}). The user may have declined the UAC "
                 "prompt or the file was not found.",
-                context={"executable": executable, "shell_execute_code": rc},
+                context={"executable": executable, "shell_execute_code": rc, "reason": reason},
             )
         logger.warning(
-            "Elevated launch started for %r; child PID is not reported by ShellExecuteW.",
-            display_name,
+            "Elevated launch started; child PID is not reported by ShellExecuteW",
+            extra={"requested": requested, "executable": executable},
         )
         return None
 

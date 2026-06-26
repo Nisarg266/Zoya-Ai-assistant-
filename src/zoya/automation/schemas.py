@@ -102,6 +102,63 @@ class PressHotkeyParams(ToolParams):
     repeats: int = Field(1, ge=1, description="Number of times to emit the whole chord.")
 
 
+class KeyboardParams(ToolParams):
+    """Unified parameters for the ``keyboard`` tool.
+
+    A single ``action`` selects one of five operations; only the fields relevant
+    to that action are required (enforced by :meth:`_enforce_action_fields`).
+    ``extra="forbid"`` (inherited) rejects any unrecognised argument, and the
+    validator turns an action/field mismatch into a clear validation error.
+    """
+
+    action: Literal["type_text", "press_key", "hotkey", "hold_key", "release_key"] = Field(
+        ..., description="Which keyboard operation to perform."
+    )
+    text: Optional[str] = Field(
+        None, description="Text to type (required for action='type_text')."
+    )
+    key: Optional[str] = Field(
+        None,
+        description=(
+            "A single key token, e.g. 'enter', 'ctrl', 'f5' or a single character "
+            "(required for press_key / hold_key / release_key)."
+        ),
+    )
+    combo: Optional[str] = Field(
+        None,
+        description="A key chord joined by '+', e.g. 'ctrl+shift+s' (required for action='hotkey').",
+    )
+    interval: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Delay (seconds) between characters (type_text) or between presses (press_key).",
+    )
+    presses: Optional[int] = Field(
+        None, ge=1, description="Number of press/release cycles (action='press_key'). Defaults to 1."
+    )
+    repeats: Optional[int] = Field(
+        None, ge=1, description="Number of times to emit the whole chord (action='hotkey'). Defaults to 1."
+    )
+
+    @model_validator(mode="after")
+    def _enforce_action_fields(self) -> "KeyboardParams":
+        """Ensure the fields required by the chosen ``action`` are present."""
+        a = self.action
+        if a == "type_text":
+            if not self.text:
+                raise ValueError("action 'type_text' requires a non-empty 'text'.")
+        elif a == "press_key":
+            if not self.key:
+                raise ValueError("action 'press_key' requires a non-empty 'key'.")
+        elif a == "hotkey":
+            if not self.combo:
+                raise ValueError("action 'hotkey' requires a non-empty 'combo'.")
+        elif a in ("hold_key", "release_key"):
+            if not self.key:
+                raise ValueError(f"action '{a}' requires a non-empty 'key'.")
+        return self
+
+
 # ===========================================================================
 # Mouse parameters
 # ===========================================================================
@@ -132,6 +189,55 @@ class MouseDragParams(ToolParams):
     y: int = Field(..., description="Destination Y coordinate for the drag.")
     button: Literal["left", "right", "middle"] = Field("left", description="Button held during drag.")
     duration: float = Field(0.5, ge=0, description="Seconds the drag movement should take.")
+
+
+class MouseParams(ToolParams):
+    """Unified parameters for the ``mouse`` tool.
+
+    A single ``action`` selects one of six operations; only the fields relevant
+    to that action are required (enforced by :meth:`_enforce_action_fields`).
+    ``extra="forbid"`` (inherited) rejects any unrecognised argument.
+
+    Coordinate actions (``move``/``drag``) take absolute ``(x, y)`` pixels;
+    ``click``/``double_click``/``right_click`` act at the current cursor
+    position (combine with ``move`` to click a specific point).
+    """
+
+    action: Literal["move", "click", "double_click", "right_click", "drag", "scroll"] = Field(
+        ..., description="Which mouse operation to perform."
+    )
+    x: Optional[int] = Field(None, description="Target absolute X pixel (move / drag).")
+    y: Optional[int] = Field(None, description="Target absolute Y pixel (move / drag).")
+    button: Optional[Literal["left", "right", "middle"]] = Field(
+        None, description="Mouse button (click / double_click / drag). Defaults to 'left'."
+    )
+    clicks: Optional[int] = Field(
+        None, ge=1, description="Number of clicks (action='click'). Defaults to 1."
+    )
+    interval: Optional[float] = Field(
+        None, ge=0, description="Seconds between successive clicks (action='click')."
+    )
+    smooth: Optional[bool] = Field(
+        None, description="Interpolate movement (move). Defaults to True."
+    )
+    duration: Optional[float] = Field(
+        None, ge=0, description="Seconds the movement should take (move / drag)."
+    )
+    dx: Optional[int] = Field(None, description="Horizontal scroll amount (positive = right).")
+    dy: Optional[int] = Field(None, description="Vertical scroll amount (positive = up).")
+
+    @model_validator(mode="after")
+    def _enforce_action_fields(self) -> "MouseParams":
+        """Ensure the fields required by the chosen ``action`` are present."""
+        a = self.action
+        if a in ("move", "drag"):
+            if self.x is None or self.y is None:
+                raise ValueError(f"action {a!r} requires 'x' and 'y'.")
+        elif a == "scroll":
+            if self.dx is None and self.dy is None:
+                raise ValueError("action 'scroll' requires 'dx' and/or 'dy'.")
+        # click / double_click / right_click have no required fields.
+        return self
 
 
 # ===========================================================================
@@ -226,6 +332,9 @@ class OpenAppParams(ToolParams):
 
     ``name`` is resolved through ``config/applications.yaml`` (canonical name or
     alias) and falls back to the system PATH, so a bare exe name still works.
+
+    Arguments are a ``list[str]`` (one token per element) so values containing
+    spaces — e.g. file paths — are passed to the child verbatim.
     """
 
     name: str = Field(
@@ -237,8 +346,12 @@ class OpenAppParams(ToolParams):
             "attempted via the system PATH."
         ),
     )
-    args: Optional[str] = Field(
-        None, description="Extra command-line arguments appended to the app's defaults."
+    args: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Extra command-line arguments appended to the app's defaults. "
+            "One token per element (e.g. ['--new-window', 'C:/path/with space.txt'])."
+        ),
     )
     working_dir: Optional[str] = Field(
         None, description="Override working directory for the new process."
@@ -277,8 +390,13 @@ class PowerParams(ToolParams):
         ..., description="The power action to perform."
     )
     confirm: bool = Field(
-        True,
-        description="Destructive actions (sleep/shutdown/restart/logoff) require confirmation.",
+        False,
+        description=(
+            "Must be explicitly true to execute a destructive action "
+            "(sleep/shutdown/restart/logoff). Defaults to false — destructive "
+            "actions are blocked until the caller re-invokes with confirm=true. "
+            "'lock' is non-destructive and runs regardless."
+        ),
     )
 
 
@@ -290,12 +408,14 @@ __all__ = [
     "TypeTextParams",
     "TapKeyParams",
     "PressHotkeyParams",
+    "KeyboardParams",
     # mouse
     "MouseMoveParams",
     "MouseClickParams",
     "MouseScrollParams",
     "MousePositionParams",
     "MouseDragParams",
+    "MouseParams",
     # window
     "ListWindowsParams",
     "FocusWindowParams",

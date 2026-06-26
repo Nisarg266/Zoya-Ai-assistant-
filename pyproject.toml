@@ -28,6 +28,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
     "google-genai>=2.0",
+    # --- Voice Input Module (optional at import, required at runtime) ---
+    "numpy>=1.24",
+    "sounddevice>=0.4",
+    "faster-whisper>=1.0",
 ]
 
 [project.optional-dependencies]

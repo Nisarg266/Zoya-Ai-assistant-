@@ -61,7 +61,8 @@ class OpenAppTool(BaseTool):
             p.name, args=p.args, working_dir=p.working_dir
         )
         return {
-            "name": result.name,
+            "requested": result.requested,
+            "canonical": result.canonical,
             "executable": result.executable,
             "pid": result.pid,
             "args": result.args,

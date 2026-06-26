@@ -27,3 +27,18 @@ llm:
   max_react_iterations: 8          # cap on prompt -> tool -> answer loops
   max_history_turns: 20            # keep at most this many user/model turn-pairs
   max_history_tokens: 50000        # trim oldest turns once history exceeds this
+
+voice:
+  enabled: true                    # master switch for the Voice Input Module
+  sample_rate: 16000               # Hz; Whisper expects 16 kHz mono
+  block_duration: 0.5              # seconds captured per audio block
+  model_size: base                 # tiny | base | small | medium | large-v3
+  device: cpu                      # cpu | cuda
+  compute_type: int8               # int8 | int8_float16 | float16 | float32
+  language: null                   # null = auto-detect, or en | hi | gu
+  languages: [en, hi, gu]          # allowed languages (Hindi, English, Gujarati)
+  vad_filter: true                 # use Whisper's built-in voice-activity detection
+  energy_threshold: 0.008           # RMS level above which a block counts as speech
+  silence_seconds: 0.6             # trailing silence that finalises an utterance
+  min_utterance_seconds: 0.5       # discard segments shorter than this
+  max_utterance_seconds: 15.0      # force-finalise segments longer than this

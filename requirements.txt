@@ -30,3 +30,10 @@ pytest-asyncio>=0.23
 
 # --- LLM Integration -------------------------------------------------------
 google-genai>=2.0                            # Google Gemini SDK (async + streaming)
+
+# --- Voice Input Module (Speech-to-Text) -----------------------------------
+# Optional at import time (the voice package loads without these); they are
+# required only when voice capture/transcription is actually used.
+numpy>=1.24                                   # audio buffer arrays
+sounddevice>=0.4                             # PortAudio microphone capture
+faster-whisper>=1.0                          # CTranslate2-backed Whisper STT

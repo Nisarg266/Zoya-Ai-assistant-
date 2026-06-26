@@ -24,6 +24,15 @@ The core LLM engine that powers Zoya's intelligence.
 - Automatically parses Zoya's automation tools (using Pydantic schemas) into Gemini Function Declarations.
 - Features a **ReAct loop** (Reason + Act) allowing Zoya to receive a command, call local tools to gather info or perform actions, and formulate a natural language response.
 
+### 3. Voice Input Module
+Continuous, asynchronous **Speech-to-Text** so Zoya can listen and be spoken to.
+- Powered by **Faster-Whisper** (CTranslate2-backed Whisper) running each transcription in a worker thread.
+- Continuous microphone capture via `sounddevice`, bridged into the `asyncio` loop through a queue.
+- Energy-based **Voice-Activity Detection** segments raw audio into utterances (silence-aware, with min/max duration guards).
+- Supports **English (en), Hindi (hi), and Gujarati (gu)**; auto-detect or force a language. Detected speech outside the allowed set is discarded.
+- Recognised text is handed to the Gemini Brain via `brain.chat()`. *(Text-to-Speech is intentionally not implemented yet.)*
+- Fully self-contained: adds **no changes to core files** and imports cleanly even when the optional audio stack is absent.
+
 ---
 
 ## 📁 Project Structure
@@ -37,15 +46,22 @@ Zoya-Ai-Assistant/
 ├── src/zoya/
 │   ├── core/               # AppConfig, logging, exceptions (shared by all modules)
 │   ├── automation/         # The Desktop Automation tools & controllers
-│   │   ├── controllers/    # Low-level, synchronous, one-job actors (e.g., keyboard.py)
+│   │   ├── controllers/    # Low-level, synchronous, one-job actors (e.g. keyboard.py)
 │   │   ├── tools/          # ITool plugins & registry for LLM function calling
 │   │   └── schemas.py      # Strict Pydantic parameter validation for every tool
-│   └── llm/                # Gemini Integration (The Brain)
-│       ├── client.py       # Async Gemini API wrapper
-│       ├── facade.py       # ZoyaBrain class (handles the tool execution loop)
-│       └── function_tools.py # Bridges Pydantic schemas with Gemini
+│   ├── llm/                # Gemini Integration (The Brain)
+│   │   ├── client.py       # Async Gemini API wrapper
+│   │   ├── facade.py       # ZoyaBrain class (handles the tool execution loop)
+│   │   └── function_tools.py # Bridges Pydantic schemas with Gemini
+│   └── voice/              # Voice Input Module (Speech-to-Text)
+│       ├── config.py       # VoiceSettings + settings.yaml loader (self-contained)
+│       ├── capture.py      # Async microphone capture (sounddevice)
+│       ├── transcriber.py  # Async Faster-Whisper wrapper (en/hi/gu)
+│       ├── listener.py     # Continuous VAD utterance segmentation
+│       └── pipeline.py     # VoiceInput facade + brain.chat() integration
 └── scripts/
-    └── demo_gemini.py      # Interactive chat script to test Zoya's brain
+    ├── demo_gemini.py      # Interactive chat script to test Zoya's brain
+    └── demo_voice.py       # Interactive mic + STT demo (with optional Brain)
 ```
 
 ---
